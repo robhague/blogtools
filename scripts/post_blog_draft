@@ -1,0 +1,145 @@
+#!/usr/bin/env python
+
+"""
+Accept a blog post via email, and post it to the draft
+installation, or publish the last posted draft.
+"""
+
+import email
+import email.parser
+import email.generator
+import email.mime.text
+import sys
+import re
+import time
+import os, errno
+import smtplib
+import random
+
+import yaml
+
+# Utility functions
+
+def ensureDir(name):
+    try:
+        os.makedirs(name)
+    except OSError, e:
+        if e.errno != errno.EEXIST:
+            raise
+
+def genSecret():
+    return hex(random.randint(0,0xffffffffffffffff))
+
+class PostByMail:
+    def __init__(self, config):
+        self.config = config
+        # Get the current time up front so that it's consistent throughout
+        self.postTime = time.gmtime()
+
+    def writeSecretFile(self, title, secret, createdFiles):
+        with open(self.config['secretFileName'], 'w') as secretFile:
+            secretFile.write('#[CONFIRM:%s]\n' % secret)
+            secretFile.write('cd %s\n' % self.config['baseDir'])
+            for f in createdFiles:
+                secretFile.write('git add %s\n' % f)
+            secretFile.write('git commit -m "Entry via email: %s"\n' % title)
+            secretFile.write('git push\n')
+
+    def checkSecret(self, msg):
+        with open(self.config['secretFileName']) as secretFile:
+            confirm = secretFile.readline()
+        return confirm in msg.as_string()
+
+    def sendMessage(self, subject, template, **messageFields):
+        msg = email.mime.text.MIMEText(template % messageFields)
+        botAddress, authorAddress = self.config['botAddress'], self.config['authorAddress']
+        msg['From'] = botAddress
+        msg['To'] = authorAddress
+        msg['Subject'] = subject
+        s = smtplib.SMTP('localhost')
+        s.sendmail(botAddress, [authorAddress], msg.as_string())
+        s.quit()
+
+    def createDraft(self, msg):
+        # Figure out the directories
+        postsDir = self.config['baseDir'] + '_posts/'
+        destDir = time.strftime('%Y/%m')
+
+        title = msg["Subject"].strip()
+        postName = re.sub('[^A-Za-z_0-9]+', '_', title[:20].lower()).strip('_')
+        postFilename = (postsDir + time.strftime('%Y-%m-%d') + '-' +
+                        postName + '.markdown')
+        createdFiles = [postFilename]
+
+        # Extract the text, and save any images encountered along the way
+        text = ''
+        lastType = 'text'
+        for part in msg.walk():
+            majorType = part.get_content_type().partition('/')[0]
+            if majorType == 'image' and lastType != 'image':
+                text = text + ('\n\n<div class="%s">' % imgDivClass)
+            elif majorType != 'image' and lastType == 'image':
+                text = text + ('</div>\n\n')
+            lastType = majorType
+
+            if part.get_content_type() == 'text/plain':
+                text = text + part.get_payload(decode = True).strip()
+                nextType = 'text'
+            elif majorType == 'image':
+                imageFilename = destDir + '/' + postName + '_' + part.get_filename()
+                ensureDir(self.config['baseDir'] + destDir)
+                absImageFilename = self.config['baseDir']+'/'+imageFilename
+                with open(absImageFilename, 'w') as img:
+                    img.write(part.get_payload(decode=1))
+                createdFiles.append(absImageFilename)
+                text = text + '\n<img src="/%s" class="%s">\n' % \
+                    (imageFilename, imgClass)
+
+        if lastType == 'image':
+            text = text + ('</div>\n\n')
+
+        with open(postFilename, 'w') as post:
+            # Emit the header
+            dateTimeString = time.strftime('%F %T %z', self.postTime)
+            post.write('---\ntitle: %s\ndate: %s' % (title, dateTimeString))
+            post.write('\nlayout: post\n')
+
+            endOfTags = re.search(r'^(?![A-Za-z_]+:)', text, re.MULTILINE)
+            if endOfTags != None:
+                post.write(text[:endOfTags.start()].strip()+'\n')
+                text = text[endOfTags.start():].lstrip()
+
+            post.write('---\n')
+
+            # Emit the rest of the text
+            post.write(text)
+
+        secret = genSecret()
+        self.writeSecretFile(title, secret, createdFiles)
+
+        # Send a notification mail
+        self.sendMessage(subject = '[SUBMITTED]: %s' % title,
+                    template = self.config['notificationTemplate'],
+                    url = '%s/%s/%s.html' % (self.config['testingUrl'], destDir, postName),
+                    secret = secret)
+
+if __name__ == '__main__':
+    if len(sys.argv) == 2:
+        config = yaml.load(open(sys.argv[1]))
+    else:
+        print "Usage: "+sys.argv[0]+" <config.yaml>"
+        sys.exit(1)
+
+    # Extract the message
+    msg = email.parser.Parser().parse(sys.stdin)
+    subject = msg['subject']
+
+    pbm = PostByMail(config)
+    if '[SUBMITTED]' in subject:
+        if pbm.checkSecret(msg):
+            os.execl('/bin/sh', '/bin/sh', config['secretFileName'])
+        else:
+            print "Could not validate request."
+            sys.exit(1)
+    else:
+        pbm.createDraft(msg)
