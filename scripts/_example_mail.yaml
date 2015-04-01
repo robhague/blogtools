@@ -1,0 +1,20 @@
+# Destinations for the files
+baseDir: /home/example/blog/
+secretFileName: /home/example/.post_secret
+
+# Other config
+imgDivClass: images-from-mail
+imgClass: from-mail
+testingUrl: https://staging.example.com/example/blog
+botAddress: staging-post@example.com
+authorAddress: example@example.com
+notificationTemplate: |
+    The following article has been submitted via email:
+
+    %(url)s
+
+    Confirm the submission by replying to this email, and including the
+    following text in the body of the message:
+
+    #[CONFIRM:%(secret)s]
+

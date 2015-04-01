@@ -77,7 +77,7 @@ class PostByMail:
         for part in msg.walk():
             majorType = part.get_content_type().partition('/')[0]
             if majorType == 'image' and lastType != 'image':
-                text = text + ('\n\n<div class="%s">' % imgDivClass)
+                text = text + ('\n\n<div class="%s">' % self.config['imgDivClass'])
             elif majorType != 'image' and lastType == 'image':
                 text = text + ('</div>\n\n')
             lastType = majorType
@@ -93,7 +93,7 @@ class PostByMail:
                     img.write(part.get_payload(decode=1))
                 createdFiles.append(absImageFilename)
                 text = text + '\n<img src="/%s" class="%s">\n' % \
-                    (imageFilename, imgClass)
+                    (imageFilename, self.config['imgClass'])
 
         if lastType == 'image':
             text = text + ('</div>\n\n')
